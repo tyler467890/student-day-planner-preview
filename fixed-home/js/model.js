@@ -1,0 +1,1122 @@
+/**
+ * Pure planner logic: dates, tasks, points, levels, streaks, reminders.
+ * No DOM and no storage, so it can run in the browser and in Node tests.
+ */
+
+import { defaultCelebrations, normalizeCelebrations } from './celebrations.js';
+import { defaultWardrobe, keepLegacyHat, normalizeWardrobe } from './shop.js';
+
+export const POINTS = { easy: 5, medium: 10, hard: 20 };
+export const DAY_COMPLETE_BONUS = 10;
+export const GOAL_BONUS = 5;
+export const MILESTONES = [
+  { days: 3, points: 15 },
+  { days: 7, points: 25 },
+  { days: 14, points: 40 },
+  { days: 30, points: 75 },
+  { days: 60, points: 120 },
+  { days: 100, points: 200 },
+];
+
+const LEVEL_STARTS = [0, 40, 100, 180, 280, 400, 550, 730, 940, 1180];
+
+export const THEMES = {
+  calm: { bg: '#E4DEFF', surface: '#FFFFFF', text: '#2A1860', muted: '#533C86', accent: '#6D4AFF', onAccent: '#FFFFFF', success: '#15803D' },
+  mint: { bg: '#C8FFE6', surface: '#FFFFFF', text: '#064536', muted: '#1B6B56', accent: '#00B894', onAccent: '#12131A', success: '#15803D' },
+  sunset: { bg: '#FFE0C2', surface: '#FFFFFF', text: '#5C2208', muted: '#8A4030', accent: '#FF4D1A', onAccent: '#12131A', success: '#15803D' },
+  ocean: { bg: '#D2EFFF', surface: '#FFFFFF', text: '#062E52', muted: '#1E5680', accent: '#0084FF', onAccent: '#12131A', success: '#15803D' },
+  blossom: { bg: '#FFD4E8', surface: '#FFFFFF', text: '#6A1040', muted: '#8E3A62', accent: '#FF2D87', onAccent: '#12131A', success: '#15803D' },
+  night: { bg: '#16142B', surface: '#2A2744', text: '#F6F4FF', muted: '#C8C2EE', accent: '#38BDF8', onAccent: '#12131A', success: '#5DFFB0' },
+};
+
+export const ACCENTS = ['#6D4AFF', '#00C2A8', '#FF4D1A', '#1A8CFF', '#FF2D87', '#38BDF8', '#7C3AED', '#00B4D8'];
+
+/** Solid background choices. The last control in the row opens the colour wheel. */
+export const BG_COLOURS = [
+  '#FFFFFF', '#FFF6D8', '#FFE0C2', '#FFD4E8', '#FFD6D6', '#E4DEFF',
+  '#D2EFFF', '#C8FFE6', '#E8FFC2', '#FFE38A', '#FFC8A3', '#F5C8FF',
+  '#C6F3FF', '#FFE4F1', '#E7EEFF', '#FFF1D6', '#D8FFD6', '#FFD0F0',
+  '#16142B', '#2A1858',
+];
+
+/** Text choices, dark inks and bright lights. The last control opens the colour wheel. */
+export const TEXT_COLOURS = [
+  '#2A1860', '#4C1D95', '#064536', '#14532D', '#5C2208', '#6A1040',
+  '#062E52', '#3B0764', '#1C1917', '#FFFFFF', '#FFF3B0', '#C8FFE6',
+  '#D2EFFF', '#FFD4E8', '#E4DEFF', '#FFE0C2', '#F6F4FF', '#B8FFF2',
+  '#FFD0D0', '#E7FFB0',
+];
+
+/** Bundled faces. The app always uses Nunito; the others are not settings. */
+export const FONTS = [
+  { id: 'nunito', label: 'Nunito' },
+  { id: 'inter', label: 'Inter' },
+  { id: 'lexend', label: 'Lexend' },
+  { id: 'caveat', label: 'Caveat' },
+];
+
+/** Diameter of the custom colour wheel, in CSS pixels. */
+export const COLOUR_WHEEL_SIZE = 220;
+
+export const WEEKDAY_LABELS = [
+  { dow: 1, short: 'M', name: 'Monday' },
+  { dow: 2, short: 'T', name: 'Tuesday' },
+  { dow: 3, short: 'W', name: 'Wednesday' },
+  { dow: 4, short: 'T', name: 'Thursday' },
+  { dow: 5, short: 'F', name: 'Friday' },
+  { dow: 6, short: 'S', name: 'Saturday' },
+  { dow: 0, short: 'S', name: 'Sunday' },
+];
+
+export function defaultCategories() {
+  return [
+    { id: 'goals', name: 'My goals', emoji: '🎯', color: '#6D4AFF' },
+  ];
+}
+
+export const PET_ANIMALS = [
+  ['dog', 'Dog'],
+  ['cat', 'Cat'],
+  ['bunny', 'Bunny'],
+  ['penguin', 'Penguin'],
+  ['monkey', 'Monkey'],
+  ['tiger', 'Tiger'],
+  ['pig', 'Pig'],
+  ['lion', 'Lion'],
+  ['panda', 'Panda'],
+  ['fox', 'Fox'],
+  ['koala', 'Koala'],
+  ['chick', 'Chick'],
+];
+
+/** Animals that are not in Cube Pets 2.0 land on the dog. */
+const PET_MIGRATION = {
+  horse: 'dog',
+  shark: 'dog',
+  axolotl: 'dog',
+  capybara: 'dog',
+  dragon: 'dog',
+};
+
+const NATURAL = { id: 'natural', label: 'Natural', fur: null };
+
+/** Realistic coats. `fur` recolours only the coat; null keeps Kenney's art. */
+const COATS = {
+  dog: [
+    NATURAL,
+    { id: 'golden', label: 'Golden', fur: '#C68642' },
+    { id: 'chocolate', label: 'Chocolate', fur: '#6B3A2A' },
+    { id: 'black', label: 'Black', fur: '#2C2C2E' },
+    { id: 'white', label: 'White', fur: '#F4F0E6' },
+    { id: 'cream', label: 'Cream', fur: '#F3E0B5' },
+    { id: 'grey', label: 'Grey', fur: '#8E9096' },
+    { id: 'merle', label: 'Merle', fur: '#7A6A78' },
+  ],
+  cat: [
+    NATURAL,
+    { id: 'orange', label: 'Orange tabby', fur: '#E07A2F' },
+    { id: 'grey', label: 'Grey', fur: '#8E93A3' },
+    { id: 'black', label: 'Black', fur: '#2A2A2E' },
+    { id: 'white', label: 'White', fur: '#F7F4EF' },
+    { id: 'calico', label: 'Calico', fur: '#E39A6A' },
+  ],
+  bunny: [
+    NATURAL,
+    { id: 'brown', label: 'Brown', fur: '#A56B45' },
+    { id: 'grey', label: 'Grey', fur: '#A8A29A' },
+    { id: 'white', label: 'White', fur: '#F6F3EE' },
+    { id: 'black', label: 'Black', fur: '#2C2C2E' },
+  ],
+  penguin: [
+    NATURAL,
+    { id: 'adelie', label: 'Adelie', fur: '#1E2430' },
+    { id: 'little-blue', label: 'Little blue', fur: '#5C6E86' },
+  ],
+  monkey: [
+    NATURAL,
+    { id: 'brown', label: 'Brown', fur: '#8A5A3A' },
+    { id: 'golden', label: 'Golden', fur: '#C4924A' },
+    { id: 'black', label: 'Black', fur: '#3A322C' },
+  ],
+  tiger: [
+    NATURAL,
+    { id: 'orange', label: 'Orange', fur: '#E07A28' },
+    { id: 'white', label: 'White tiger', fur: '#F6F3EE' },
+  ],
+  pig: [
+    NATURAL,
+    { id: 'pink', label: 'Pink', fur: '#F2A3B5' },
+    { id: 'black', label: 'Black', fur: '#3A3438' },
+    { id: 'spotted', label: 'Spotted', fur: '#C4A8A0' },
+  ],
+  lion: [
+    NATURAL,
+    { id: 'tawny', label: 'Tawny', fur: '#C4A15A' },
+    { id: 'white', label: 'White lion', fur: '#F4F1EA' },
+  ],
+  panda: [
+    NATURAL,
+    { id: 'brown', label: 'Brown', fur: '#6B4A32' },
+  ],
+  fox: [
+    NATURAL,
+    { id: 'red', label: 'Red', fur: '#E07A32' },
+    { id: 'silver', label: 'Silver', fur: '#6E7278' },
+    { id: 'arctic', label: 'Arctic', fur: '#F4F1EA' },
+  ],
+  koala: [
+    NATURAL,
+    { id: 'grey', label: 'Grey', fur: '#9AA0AA' },
+    { id: 'brown', label: 'Brown', fur: '#8A7568' },
+  ],
+  chick: [
+    NATURAL,
+    { id: 'yellow', label: 'Yellow', fur: '#F2C84B' },
+    { id: 'buff', label: 'Buff', fur: '#E6C07A' },
+    { id: 'black', label: 'Black', fur: '#2E2E32' },
+  ],
+};
+
+/** Same fur-only recolour for every animal. Face, paws, and beak stay put. */
+const FUN_COATS = [
+  { id: 'blue', label: 'Blue', fur: '#3B82F6' },
+  { id: 'pink', label: 'Pink', fur: '#F472B6' },
+  { id: 'purple', label: 'Purple', fur: '#A78BFA' },
+];
+
+const EYE = {
+  natural: { id: 'natural', label: 'Natural', hex: null },
+  brown: { id: 'brown', label: 'Brown', hex: '#6B3E26' },
+  amber: { id: 'amber', label: 'Amber', hex: '#D4922A' },
+  green: { id: 'green', label: 'Green', hex: '#3E8F4A' },
+  blue: { id: 'blue', label: 'Blue', hex: '#3D6FBF' },
+  copper: { id: 'copper', label: 'Copper', hex: '#B5693A' },
+};
+
+const EYE_CHOICES = {
+  dog: ['natural', 'brown', 'amber', 'blue'],
+  cat: ['natural', 'green', 'amber', 'copper', 'blue'],
+  bunny: ['natural', 'brown', 'amber', 'blue'],
+  penguin: ['natural', 'brown', 'amber'],
+  monkey: ['natural', 'brown', 'amber'],
+  tiger: ['natural', 'amber', 'brown', 'green'],
+  pig: ['natural', 'brown', 'amber', 'blue'],
+  lion: ['natural', 'amber', 'brown', 'green'],
+  panda: ['natural', 'brown', 'amber'],
+  fox: ['natural', 'amber', 'brown'],
+  koala: ['natural', 'brown', 'amber'],
+  chick: ['natural', 'brown', 'amber'],
+};
+
+export function coatsFor(animal) {
+  return COATS[animal] || COATS.penguin;
+}
+
+export function funCoats() {
+  return FUN_COATS;
+}
+
+export function eyeColoursFor(animal) {
+  const ids = EYE_CHOICES[animal] || EYE_CHOICES.penguin;
+  return ids.map((id) => EYE[id]);
+}
+
+export function resolveCoat(animal, id) {
+  const coats = coatsFor(animal);
+  return coats.find((coat) => coat.id === id)
+    || FUN_COATS.find((coat) => coat.id === id)
+    || coats[0];
+}
+
+export function resolveEye(animal, id) {
+  const eyes = eyeColoursFor(animal);
+  return eyes.find((eye) => eye.id === id) || eyes[0];
+}
+
+export function defaultPet() {
+  return {
+    animal: 'penguin',
+    coat: 'natural',
+    eyeColor: 'natural',
+    eyes: 'round',
+    cheeks: true,
+    hat: false,
+    height: 1,
+    body: 1,
+    celebrations: defaultCelebrations(),
+  };
+}
+
+export function normalizePet(saved) {
+  const base = defaultPet();
+  if (!saved || typeof saved !== 'object') return base;
+  const migrated = PET_MIGRATION[saved.animal] || saved.animal;
+  const animal = PET_ANIMALS.some(([id]) => id === migrated) ? migrated : base.animal;
+  const eyes = saved.eyes === 'happy' || saved.eyes === 'sparkly' ? saved.eyes : 'round';
+  const height = Number(saved.height);
+  const body = Number(saved.body);
+  return {
+    animal,
+    coat: resolveCoat(animal, saved.coat).id,
+    eyeColor: resolveEye(animal, saved.eyeColor).id,
+    eyes,
+    cheeks: saved.cheeks !== false,
+    hat: Boolean(saved.hat),
+    height: Number.isFinite(height) ? Math.min(1.4, Math.max(0.75, height)) : 1,
+    body: Number.isFinite(body) ? Math.min(1.3, Math.max(0.8, body)) : 1,
+    celebrations: normalizeCelebrations(saved.celebrations),
+  };
+}
+
+export function defaultSettings() {
+  return {
+    id: 'main',
+    title: 'My Day',
+    theme: 'calm',
+    accent: '#6D4AFF',
+    textColor: null,
+    bgColor: null,
+    font: 'nunito',
+    format: 'list',
+    celebrations: 'full',
+    sound: true,
+    clock24: false,
+    installedOn: null,
+    defaultLead: 10,
+    showNames: true,
+    morningCheckin: { on: false, time: '08:00' },
+    setupComplete: false,
+    setupStep: 1,
+    lastBackup: null,
+    backupNudgeDismissedOn: null,
+    persistResult: null,
+    dayCompleteShown: {},
+    dayCompleteAwarded: {},
+    highestLevel: 1,
+    celebratedLevel: 1,
+    remindersWanted: false,
+    pushSubscription: null,
+    installSkipped: false,
+    photoScrim: 'auto',
+    photoBlur: 0,
+    categories: defaultCategories(),
+    pet: defaultPet(),
+    wardrobe: defaultWardrobe(),
+    suggestFrequency: 'normal',
+    suggestPace: 'normal',
+    suggestIncludeOlder: false,
+    suggestCard: null,
+    schemaVersion: 4,
+  };
+}
+
+export function defaultDifficulty(categoryId) {
+  return categoryId === 'class' ? 'medium' : 'easy';
+}
+
+export function pad(n) {
+  return String(n).padStart(2, '0');
+}
+
+export function ymdFromParts(y, m, d) {
+  return `${y}-${pad(m)}-${pad(d)}`;
+}
+
+export function parseYMD(ymd) {
+  const [y, m, d] = ymd.split('-').map(Number);
+  return { y, m, d };
+}
+
+export function addDays(ymd, n) {
+  const { y, m, d } = parseYMD(ymd);
+  const dt = new Date(Date.UTC(y, m - 1, d + n));
+  return dt.toISOString().slice(0, 10);
+}
+
+export function dayOfWeek(ymd) {
+  const { y, m, d } = parseYMD(ymd);
+  return new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+}
+
+export function parseHM(hm) {
+  const [h, m] = String(hm || '00:00').split(':').map(Number);
+  return { h: h || 0, m: m || 0 };
+}
+
+export function hmToMinutes(hm) {
+  const { h, m } = parseHM(hm);
+  return h * 60 + m;
+}
+
+export function isPlannerYmd(value) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(String(value || ''));
+}
+
+/** Planner date for a Date. The day ends at local midnight. */
+export function plannerDate(date) {
+  const local = date instanceof Date ? date : new Date(date);
+  return ymdFromParts(local.getFullYear(), local.getMonth() + 1, local.getDate());
+}
+
+export function formatDayLabel(ymd) {
+  const { y, m, d } = parseYMD(ymd);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return new Intl.DateTimeFormat('en-US', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    timeZone: 'UTC',
+  }).format(dt);
+}
+
+export function formatTime(hm, clock24) {
+  if (!hm) return '';
+  const { h, m } = parseHM(hm);
+  if (clock24) return `${pad(h)}:${pad(m)}`;
+  const suffix = h >= 12 ? 'PM' : 'AM';
+  const h12 = h % 12 || 12;
+  return `${h12}:${pad(m)} ${suffix}`;
+}
+
+/** Calendar Date for a clock time on a planner day. Times stay on that calendar day. */
+export function zonedDateTime(plannerYmd, hm) {
+  const { y, m, d } = parseYMD(plannerYmd);
+  const { h, m: min } = parseHM(hm);
+  return new Date(y, m - 1, d, h, min, 0, 0);
+}
+
+export function mondayOf(ymd) {
+  const dow = dayOfWeek(ymd);
+  const delta = dow === 0 ? -6 : 1 - dow;
+  return addDays(ymd, delta);
+}
+
+function weekStarting(ymd, anchorDow) {
+  const anchor = ((Number(anchorDow) % 7) + 7) % 7;
+  const dow = dayOfWeek(ymd);
+  return addDays(ymd, -((dow - anchor + 7) % 7));
+}
+
+/** Week containing `ymd`, starting on the weekday of `installedOn`. Monday when that date is missing. */
+export function weekStartOf(ymd, installedOn) {
+  const anchor = isPlannerYmd(installedOn) ? dayOfWeek(installedOn) : 1;
+  return weekStarting(ymd, anchor);
+}
+
+/** Earliest planner date already stored, for people who open the app after they have data. */
+export function earliestStoredDate(tasks, completions, bonuses) {
+  const dates = [];
+  for (const task of tasks || []) if (isPlannerYmd(task?.date)) dates.push(task.date);
+  for (const item of completions || []) {
+    if (isPlannerYmd(item?.completedOn)) dates.push(item.completedOn);
+    if (isPlannerYmd(item?.date)) dates.push(item.date);
+  }
+  for (const bonus of bonuses || []) if (isPlannerYmd(bonus?.date)) dates.push(bonus.date);
+  dates.sort();
+  return dates[0] || null;
+}
+
+function isCountable(ymd, weekdaysOnly) {
+  if (!weekdaysOnly) return true;
+  const dow = dayOfWeek(ymd);
+  return dow !== 0 && dow !== 6;
+}
+
+/**
+ * Streak as of a planner day. Today is still open: a miss counts only after
+ * the day has ended. One rest day per week. The week starts on `weekAnchor`
+ * (0 Sunday … 6 Saturday, default Monday). A second miss that week resets
+ * the current streak. Best streak is the highest run in the history.
+ */
+export function computeStreak(completionDates, today, { weekdaysOnly = false, weekAnchor = 1 } = {}) {
+  const set = new Set((completionDates || []).filter((d) => d && d <= today));
+  const milestones = [];
+  if (set.size === 0) {
+    return { streak: 0, best: 0, restDays: [], lastCounted: null, milestones };
+  }
+  const start = [...set].sort()[0];
+  let streak = 0;
+  let best = 0;
+  let lastCounted = null;
+  let restWeek = null;
+  const restDays = [];
+
+  function applyMiss(day) {
+    const week = weekStarting(day, weekAnchor);
+    if (restWeek !== week) {
+      restWeek = week;
+      restDays.push(day);
+      return 'rest';
+    }
+    streak = 0;
+    return 'reset';
+  }
+
+  let d = start;
+  while (d <= today) {
+    if (isCountable(d, weekdaysOnly) && set.has(d)) {
+      if (lastCounted) {
+        let m = addDays(lastCounted, 1);
+        while (m < d) {
+          if (isCountable(m, weekdaysOnly) && applyMiss(m) === 'reset') break;
+          m = addDays(m, 1);
+        }
+      }
+      streak += 1;
+      lastCounted = d;
+      if (streak > best) best = streak;
+      for (const ms of MILESTONES) {
+        if (streak === ms.days) milestones.push({ date: d, days: ms.days, points: ms.points });
+      }
+    }
+    d = addDays(d, 1);
+  }
+
+  if (lastCounted && !set.has(today)) {
+    const yesterday = addDays(today, -1);
+    let m = addDays(lastCounted, 1);
+    while (m <= yesterday) {
+      if (isCountable(m, weekdaysOnly) && applyMiss(m) === 'reset') break;
+      m = addDays(m, 1);
+    }
+  }
+
+  return { streak, best, restDays, lastCounted, milestones };
+}
+
+export function levelForPoints(points) {
+  const pts = Math.max(0, points || 0);
+  if (pts < 1180) {
+    let level = 1;
+    for (let i = 0; i < LEVEL_STARTS.length; i += 1) {
+      if (pts >= LEVEL_STARTS[i]) level = i + 1;
+    }
+    return level;
+  }
+  return 10 + Math.floor((pts - 1180) / 300);
+}
+
+export function levelBounds(level) {
+  const lv = Math.max(1, level);
+  if (lv <= 10) {
+    return {
+      start: LEVEL_STARTS[lv - 1],
+      next: lv < 10 ? LEVEL_STARTS[lv] : 1480,
+    };
+  }
+  const start = 1180 + (lv - 10) * 300;
+  return { start, next: start + 300 };
+}
+
+export function levelTitle(level) {
+  if (level >= 20) return 'Legend';
+  if (level >= 15) return 'Unstoppable';
+  if (level >= 10) return 'Focused';
+  if (level >= 5) return 'Steady';
+  return 'Starter';
+}
+
+export function levelProgress(points, displayedLevel) {
+  const { start, next } = levelBounds(displayedLevel);
+  if (points < start) return 0;
+  if (points >= next) return 1;
+  return (points - start) / (next - start);
+}
+
+export function displayLevel(points, highestLevel) {
+  return Math.max(levelForPoints(points), highestLevel || 1);
+}
+
+export function occursOn(task, ymd) {
+  if (!task) return false;
+  if (!task.repeat || task.repeat === 'none') return task.date === ymd;
+  if (task.date && ymd < task.date) return false;
+  if (task.until && /^\d{4}-\d{2}-\d{2}$/.test(task.until) && ymd > task.until) return false;
+  const dow = dayOfWeek(ymd);
+  if (task.repeat === 'daily') return true;
+  if (task.repeat === 'weekdays') return dow !== 0 && dow !== 6;
+  if (task.repeat === 'weekends') return dow === 0 || dow === 6;
+  if (task.repeat === 'days') return Array.isArray(task.days) && task.days.includes(dow);
+  return false;
+}
+
+function toInstance(task, ymd, edits, movedFrom) {
+  const merged = { ...task, ...(edits || {}) };
+  const origin = movedFrom || ymd;
+  return {
+    instanceId: `${task.id}:${origin}`,
+    taskId: task.id,
+    originDate: origin,
+    date: ymd,
+    title: merged.title || '',
+    categoryId: merged.categoryId,
+    difficulty: merged.difficulty || 'easy',
+    time: merged.time || null,
+    durationMin: merged.durationMin ?? null,
+    remindLeadMin: merged.remindLeadMin ?? null,
+    note: merged.note || '',
+    repeat: task.repeat || 'none',
+    days: task.days ? [...task.days] : [],
+    until: task.until || null,
+    repeating: Boolean(task.repeat && task.repeat !== 'none'),
+    moved: Boolean(movedFrom),
+  };
+}
+
+export function instancesOn(ymd, tasks, overrides) {
+  const list = [];
+  const ovs = overrides || [];
+  for (const task of tasks || []) {
+    const own = ovs.find((o) => o.taskId === task.id && o.date === ymd);
+    if (occursOn(task, ymd) && !own?.skipped && !own?.movedTo) {
+      list.push(toInstance(task, ymd, own?.edits, null));
+    }
+  }
+  for (const ov of ovs) {
+    if (ov.movedTo !== ymd) continue;
+    const task = (tasks || []).find((t) => t.id === ov.taskId);
+    if (!task) continue;
+    list.push(toInstance(task, ymd, ov.edits, ov.date));
+  }
+  list.sort((a, b) => {
+    if (a.time && b.time && a.time !== b.time) return a.time < b.time ? -1 : 1;
+    if (a.time && !b.time) return -1;
+    if (!a.time && b.time) return 1;
+    return a.title.localeCompare(b.title);
+  });
+  return list;
+}
+
+export function sumPoints(completions, bonuses) {
+  let total = 0;
+  for (const item of completions || []) total += item.points || 0;
+  for (const item of bonuses || []) total += item.points || 0;
+  return total;
+}
+
+export function pointsOnDate(completions, bonuses, ymd) {
+  let total = 0;
+  for (const item of completions || []) {
+    if ((item.completedOn || item.date) === ymd) total += item.points || 0;
+  }
+  for (const item of bonuses || []) {
+    if (item.date === ymd) total += item.points || 0;
+  }
+  return total;
+}
+
+export function isDayComplete(instances, completions) {
+  if (!instances || instances.length < 2) return false;
+  return instances.every((inst) => (completions || []).some((c) => c.instanceId === inst.instanceId));
+}
+
+/** The day's goal is every task scheduled that day. An empty day is not met. */
+export function goalMet(_settings, instances, completions) {
+  const list = instances || [];
+  if (!list.length) return false;
+  return list.every((inst) => (completions || []).some((c) => c.instanceId === inst.instanceId));
+}
+
+export function reminderText({ title, time, note, showNames, clock24 }) {
+  if (!showNames) {
+    return { title: 'Coming up', body: 'You have something coming up' };
+  }
+  const parts = [];
+  if (time) parts.push(`Starts ${formatTime(time, clock24)}`);
+  if (note) parts.push(note);
+  return { title: title || 'Coming up', body: parts.join(' · ') || 'Starts soon' };
+}
+
+/**
+ * Reminders for the next 7 days. Task titles are omitted entirely when
+ * showNames is false, so a push payload built from this list cannot leak them.
+ */
+export function upcomingReminders({ tasks, overrides, settings, now, showNames }) {
+  const today = plannerDate(now);
+  const horizon = now.getTime() + 7 * 24 * 60 * 60 * 1000;
+  const names = showNames !== false && settings?.showNames !== false;
+  const clock24 = Boolean(settings?.clock24);
+  const list = [];
+
+  for (let i = 0; i < 8; i += 1) {
+    const ymd = addDays(today, i);
+    const instances = instancesOn(ymd, tasks, overrides);
+    if (settings?.morningCheckin?.on) {
+      const at = zonedDateTime(ymd, settings.morningCheckin.time || '08:00');
+      const ts = at.getTime();
+      if (ts > now.getTime() && ts <= horizon) {
+        const n = instances.length;
+        list.push({
+          id: `morning:${ymd}`,
+          fireAtUTC: at.toISOString(),
+          title: names ? "Here's your day" : 'Coming up',
+          body: names
+            ? `Here's your day: ${n} ${n === 1 ? 'thing' : 'things'} planned.`
+            : 'You have something coming up',
+          taskId: null,
+          date: ymd,
+          kind: 'morning',
+        });
+      }
+    }
+    for (const inst of instances) {
+      if (!inst.time || inst.remindLeadMin == null) continue;
+      const at = zonedDateTime(ymd, inst.time);
+      at.setMinutes(at.getMinutes() - Number(inst.remindLeadMin));
+      const ts = at.getTime();
+      if (ts <= now.getTime() || ts > horizon) continue;
+      const text = reminderText({
+        title: inst.title,
+        time: inst.time,
+        note: inst.note,
+        showNames: names,
+        clock24,
+      });
+      list.push({
+        id: `${inst.taskId}:${ymd}:${at.toISOString()}`,
+        fireAtUTC: at.toISOString(),
+        title: text.title,
+        body: text.body,
+        taskId: inst.taskId,
+        date: ymd,
+        kind: 'task',
+      });
+    }
+  }
+  return list;
+}
+
+export function hexToRgb(hex) {
+  const n = hex.replace('#', '');
+  return {
+    r: parseInt(n.slice(0, 2), 16),
+    g: parseInt(n.slice(2, 4), 16),
+    b: parseInt(n.slice(4, 6), 16),
+  };
+}
+
+export function rgbToHex({ r, g, b }) {
+  const h = (v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0');
+  return `#${h(r)}${h(g)}${h(b)}`.toUpperCase();
+}
+
+export function relativeLuminance(hex) {
+  const { r, g, b } = hexToRgb(hex);
+  const chan = (c) => {
+    const s = c / 255;
+    return s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * chan(r) + 0.7152 * chan(g) + 0.0722 * chan(b);
+}
+
+export function contrastRatio(a, b) {
+  const l1 = relativeLuminance(a);
+  const l2 = relativeLuminance(b);
+  const [hi, lo] = l1 > l2 ? [l1, l2] : [l2, l1];
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+export function onAccent(hex) {
+  return contrastRatio(hex, '#FFFFFF') >= 4.5 ? '#FFFFFF' : '#12131A';
+}
+
+export function composite(topHex, topAlpha, bottomHex) {
+  const t = hexToRgb(topHex);
+  const b = hexToRgb(bottomHex);
+  const a = topAlpha;
+  return rgbToHex({
+    r: t.r * a + b.r * (1 - a),
+    g: t.g * a + b.g * (1 - a),
+    b: t.b * a + b.b * (1 - a),
+  });
+}
+
+export function autoScrim(averageLuminance) {
+  return averageLuminance > 0.5 ? 'light' : 'dark';
+}
+
+/** Header text colour and the composited scrim colour over a photo. */
+export function headerContrast(photoHex, scrimMode) {
+  const dark = scrimMode !== 'light';
+  const scrim = dark
+    ? composite('#000000', 0.6, photoHex)
+    : composite('#FFFFFF', 0.7, photoHex);
+  const text = dark ? '#FFFFFF' : '#1E2030';
+  return { scrim, text, ratio: contrastRatio(text, scrim) };
+}
+
+/** Card surface is 92% opaque. Returns contrast of text and muted on it. */
+export function cardContrast(theme, photoHex) {
+  const surface = composite(theme.surface, 0.92, photoHex);
+  return {
+    surface,
+    textRatio: contrastRatio(theme.text, surface),
+    mutedRatio: contrastRatio(theme.muted, surface),
+  };
+}
+
+export function normalizeHex(value) {
+  if (typeof value !== 'string') return null;
+  const raw = value.trim().replace(/^#/, '');
+  if (!/^[0-9a-fA-F]{6}$/.test(raw)) return null;
+  return `#${raw.toUpperCase()}`;
+}
+
+function clamp(n, lo, hi) {
+  return Math.min(hi, Math.max(lo, n));
+}
+
+export function hexToHsl(hex) {
+  const { r, g, b } = hexToRgb(hex);
+  const R = r / 255;
+  const G = g / 255;
+  const B = b / 255;
+  const max = Math.max(R, G, B);
+  const min = Math.min(R, G, B);
+  const l = (max + min) / 2;
+  if (max === min) return { h: 0, s: 0, l: l * 100 };
+  const d = max - min;
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+  let h = 0;
+  if (max === R) h = (G - B) / d + (G < B ? 6 : 0);
+  else if (max === G) h = (B - R) / d + 2;
+  else h = (R - G) / d + 4;
+  return { h: h * 60, s: s * 100, l: l * 100 };
+}
+
+function hue2rgb(p, q, t) {
+  let x = t;
+  if (x < 0) x += 1;
+  if (x > 1) x -= 1;
+  if (x < 1 / 6) return p + (q - p) * 6 * x;
+  if (x < 1 / 2) return q;
+  if (x < 2 / 3) return p + (q - p) * (2 / 3 - x) * 6;
+  return p;
+}
+
+export function hsvToRgb({ h, s, v }) {
+  const H = (((Number(h) || 0) % 360) + 360) % 360 / 60;
+  const S = clamp(Number(s) || 0, 0, 100) / 100;
+  const V = clamp(Number(v) || 0, 0, 100) / 100;
+  const c = V * S;
+  const x = c * (1 - Math.abs((H % 2) - 1));
+  const m = V - c;
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  if (H < 1) { r = c; g = x; }
+  else if (H < 2) { r = x; g = c; }
+  else if (H < 3) { g = c; b = x; }
+  else if (H < 4) { g = x; b = c; }
+  else if (H < 5) { r = x; b = c; }
+  else { r = c; b = x; }
+  return {
+    r: (r + m) * 255,
+    g: (g + m) * 255,
+    b: (b + m) * 255,
+  };
+}
+
+export function hsvToHex(hsv) {
+  return rgbToHex(hsvToRgb(hsv));
+}
+
+export function hexToHsv(hex) {
+  const norm = normalizeHex(hex) || '#000000';
+  const { r, g, b } = hexToRgb(norm);
+  const R = r / 255;
+  const G = g / 255;
+  const B = b / 255;
+  const max = Math.max(R, G, B);
+  const min = Math.min(R, G, B);
+  const d = max - min;
+  let h = 0;
+  if (d !== 0) {
+    if (max === R) h = ((G - B) / d) % 6;
+    else if (max === G) h = (B - R) / d + 2;
+    else h = (R - G) / d + 4;
+    h *= 60;
+    if (h < 0) h += 360;
+  }
+  return { h, s: max === 0 ? 0 : (d / max) * 100, v: max * 100 };
+}
+
+/** Hue and saturation for a point on the colour wheel. Points outside the disc land on the rim. */
+export function wheelPointToHs(x, y, size) {
+  const radius = size / 2;
+  if (!radius) return { h: 0, s: 0 };
+  const dx = x - radius;
+  const dy = y - radius;
+  const dist = Math.min(Math.hypot(dx, dy), radius);
+  let h = (Math.atan2(dy, dx) * 180) / Math.PI;
+  if (h < 0) h += 360;
+  return { h, s: (dist / radius) * 100 };
+}
+
+export function hsToWheelPoint(h, s, size) {
+  const radius = (size / 2) * (clamp(Number(s) || 0, 0, 100) / 100);
+  const rad = ((((Number(h) || 0) % 360) + 360) % 360 * Math.PI) / 180;
+  return {
+    x: size / 2 + Math.cos(rad) * radius,
+    y: size / 2 + Math.sin(rad) * radius,
+  };
+}
+
+export function hslToHex({ h, s, l }) {
+  const H = (((h % 360) + 360) % 360) / 360;
+  const S = clamp(s, 0, 100) / 100;
+  const L = clamp(l, 0, 100) / 100;
+  if (S === 0) {
+    const v = Math.round(L * 255);
+    return rgbToHex({ r: v, g: v, b: v });
+  }
+  const q = L < 0.5 ? L * (1 + S) : L + S - L * S;
+  const p = 2 * L - q;
+  return rgbToHex({
+    r: hue2rgb(p, q, H + 1 / 3) * 255,
+    g: hue2rgb(p, q, H) * 255,
+    b: hue2rgb(p, q, H - 1 / 3) * 255,
+  });
+}
+
+/** Gray whose WCAG relative luminance is as close as possible to `L`. */
+export function grayFromLuminance(L) {
+  const x = clamp(Number(L) || 0, 0, 1);
+  const s = x <= 0.0031308 ? 12.92 * x : 1.055 * (x ** (1 / 2.4)) - 0.055;
+  const c = Math.round(clamp(s, 0, 1) * 255);
+  return rgbToHex({ r: c, g: c, b: c });
+}
+
+function cardFill(surface, bg, photoHex) {
+  return photoHex ? composite(surface, 0.92, photoHex) : composite(surface, 0.92, bg);
+}
+
+function surfaceFor(text, ground, bg, photoHex) {
+  const lightText = relativeLuminance(text) >= 0.5;
+  const candidates = lightText
+    ? [composite('#FFFFFF', 0.08, ground), '#1A1730', '#000000']
+    : ['#FFFFFF', composite('#FFFFFF', 0.9, ground)];
+  for (const surface of candidates) {
+    if (contrastRatio(text, cardFill(surface, bg, photoHex)) >= 4.5) return surface;
+  }
+  return lightText ? '#000000' : '#FFFFFF';
+}
+
+function softerInk(text, grounds) {
+  const list = grounds.filter(Boolean);
+  if (!list.length) return text;
+  const passes = (hex) => list.every((g) => contrastRatio(hex, g) >= 4.5);
+  const base = list[0];
+  for (let a = 0.72; a <= 1.001; a += 0.04) {
+    const hex = composite(text, Math.min(a, 1), base);
+    if (passes(hex)) return hex;
+  }
+  return text;
+}
+
+/**
+ * Colours actually painted for a settings object.
+ * `photo` is `{ on, luminance, scrim }` when a background photo is showing.
+ * `scrim` should already be resolved to "dark" or "light".
+ */
+export function paintColors(settings, photo = null) {
+  const theme = THEMES[settings?.theme] || THEMES.calm;
+  const customBg = normalizeHex(settings?.bgColor);
+  const customText = normalizeHex(settings?.textColor);
+  const bg = customBg || theme.bg;
+  const text = customText || theme.text;
+  const accent = normalizeHex(settings?.accent) || theme.accent;
+  const photoOn = Boolean(photo?.on);
+  const scrim = photo?.scrim === 'light' ? 'light' : 'dark';
+  const photoHex = photoOn ? grayFromLuminance(photo?.luminance == null ? 0.5 : photo.luminance) : null;
+  const backdrop = photoOn ? headerContrast(photoHex, scrim).scrim : bg;
+  const custom = Boolean(customBg || customText);
+  const surface = custom ? surfaceFor(text, photoOn ? backdrop : bg, bg, photoHex) : theme.surface;
+  const card = cardFill(surface, bg, photoHex);
+  const mutedGrounds = [card];
+  if (!(photoOn && !customText)) mutedGrounds.push(photoOn ? backdrop : bg);
+  const muted = custom ? softerInk(text, mutedGrounds) : theme.muted;
+  const headerInk = photoOn && !customText ? headerContrast(photoHex, scrim).text : text;
+  const headerRatio = contrastRatio(headerInk, photoOn ? backdrop : bg);
+  const cardRatio = contrastRatio(text, card);
+  const mutedRatio = Math.min(...mutedGrounds.map((g) => contrastRatio(muted, g)));
+  const ratio = Math.min(headerRatio, cardRatio, mutedRatio);
+  return {
+    bg,
+    text,
+    surface,
+    muted,
+    accent,
+    success: theme.success,
+    backdrop,
+    card,
+    ratio,
+    ok: ratio >= 4.5,
+    customText: Boolean(customText),
+    customBg: Boolean(customBg),
+    headerInk,
+  };
+}
+
+/** Nearest lighter or darker shade of `textHex` that clears 4.5:1 on the painted grounds. */
+export function nearestReadable(textHex, settings, photo = null) {
+  const start = normalizeHex(textHex) || THEMES.calm.text;
+  const trial = (hex) => paintColors({ ...settings, textColor: hex }, photo);
+  if (trial(start).ok) return start;
+  const hsl = hexToHsl(start);
+  for (let step = 1; step <= 100; step += 1) {
+    for (const dir of [1, -1]) {
+      const hex = hslToHex({ h: hsl.h, s: hsl.s, l: clamp(hsl.l + dir * step, 0, 100) });
+      if (trial(hex).ok) return hex;
+    }
+  }
+  let best = '#12131A';
+  let bestScore = -1;
+  for (const hex of ['#FFFFFF', '#12131A', '#000000', '#F6F4FF']) {
+    const score = trial(hex).ratio;
+    if (score > bestScore) {
+      bestScore = score;
+      best = hex;
+    }
+  }
+  return best;
+}
+
+export function fixTextColor(settings, photo = null) {
+  const theme = THEMES[settings?.theme] || THEMES.calm;
+  const start = normalizeHex(settings?.textColor) || theme.text;
+  return nearestReadable(start, settings, photo);
+}
+
+/** Fill new colour fields without dropping a v1 save's theme, accent, or categories. */
+export function migrateSettings(saved) {
+  const base = defaultSettings();
+  if (!saved || typeof saved !== 'object') return base;
+  const version = Number(saved.schemaVersion) || 1;
+  const merged = {
+    ...base,
+    ...saved,
+    morningCheckin: { ...base.morningCheckin, ...(saved.morningCheckin || {}) },
+    dayCompleteShown: { ...(saved.dayCompleteShown || {}) },
+    dayCompleteAwarded: { ...(saved.dayCompleteAwarded || {}) },
+    categories: Array.isArray(saved.categories) && saved.categories.length ? saved.categories : base.categories,
+    installedOn: isPlannerYmd(saved.installedOn) ? saved.installedOn : null,
+    pet: normalizePet(saved.pet),
+    wardrobe: keepLegacyHat(normalizeWardrobe(saved.wardrobe), Boolean(saved.pet?.hat)),
+    id: 'main',
+  };
+  delete merged.dayStart;
+  delete merged.weekStart;
+  delete merged.streakMode;
+  delete merged.dailyGoal;
+  // v2 copied an old whole-model tint into Main and painted the wrong parts.
+  // v3 puts every saved pet back on Natural so the real animal colours return.
+  if (version < 3) {
+    merged.pet = { ...merged.pet, coat: 'natural', eyeColor: 'natural' };
+  }
+  merged.schemaVersion = 4;
+  merged.textColor = normalizeHex(saved.textColor);
+  merged.bgColor = normalizeHex(saved.bgColor);
+  if (!THEMES[merged.theme]) merged.theme = base.theme;
+  applyPresentationDefaults(merged);
+  return merged;
+}
+
+/** Weekday numbers for a repeat preset. Custom repeats use `days` as stored. */
+export function daysForRepeat(repeat, days) {
+  if (repeat === 'daily') return [1, 2, 3, 4, 5, 6, 0];
+  if (repeat === 'weekdays') return [1, 2, 3, 4, 5];
+  if (repeat === 'weekends') return [6, 0];
+  if (repeat === 'days') return [...(days || [])].map(Number).filter((day) => day >= 0 && day <= 6);
+  return [];
+}
+
+/** Preset that matches a set of weekdays. Anything else stays a custom list. */
+export function repeatFromDays(days) {
+  const set = new Set((days || []).map(Number));
+  if (!set.size) return 'none';
+  if (set.size === 7) return 'daily';
+  if (set.size === 5 && [1, 2, 3, 4, 5].every((day) => set.has(day))) return 'weekdays';
+  if (set.size === 2 && set.has(0) && set.has(6)) return 'weekends';
+  return 'days';
+}
+
+export function addMinutesToTime(hm, minutes) {
+  if (!hm || minutes == null || !Number.isFinite(Number(minutes))) return null;
+  const total = hmToMinutes(hm) + Number(minutes);
+  const day = 24 * 60;
+  const wrapped = ((total % day) + day) % day;
+  return `${pad(Math.floor(wrapped / 60))}:${pad(wrapped % 60)}`;
+}
+
+/** Minutes from start to end. An earlier end is the next morning, up to 18 hours. */
+export function minutesBetween(start, end) {
+  if (!start || !end) return null;
+  const a = hmToMinutes(start);
+  const b = hmToMinutes(end);
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+  let diff = b - a;
+  if (diff <= 0) diff += 24 * 60;
+  if (diff <= 0 || diff > 18 * 60) return null;
+  return diff;
+}
+
+export function formatTimeRange(start, durationMin, clock24) {
+  if (!start) return '';
+  const left = formatTime(start, clock24);
+  const mins = Number(durationMin);
+  if (!Number.isFinite(mins) || mins <= 0) return left;
+  const end = addMinutesToTime(start, mins);
+  if (!end || end === start) return left;
+  return `${left} – ${formatTime(end, clock24)}`;
+}
+
+const DAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const DAY_ORDER = [1, 2, 3, 4, 5, 6, 0];
+
+/** Short day line: Mon–Fri, Tue & Thu, Every day. */
+export function formatDaySelection(days) {
+  const set = new Set((days || []).map(Number));
+  if (set.size === 7) return 'Every day';
+  const seq = DAY_ORDER.filter((day) => set.has(day));
+  if (!seq.length) return '';
+  const groups = [];
+  let i = 0;
+  while (i < seq.length) {
+    let j = i;
+    while (j + 1 < seq.length && DAY_ORDER.indexOf(seq[j + 1]) === DAY_ORDER.indexOf(seq[j]) + 1) j += 1;
+    const count = j - i + 1;
+    if (count >= 3) groups.push(`${DAY_SHORT[seq[i]]}–${DAY_SHORT[seq[j]]}`);
+    else if (count === 2) groups.push(`${DAY_SHORT[seq[i]]} & ${DAY_SHORT[seq[j]]}`);
+    else groups.push(DAY_SHORT[seq[i]]);
+    i = j + 1;
+  }
+  if (groups.length === 2 && groups.every((group) => !group.includes('–') && !group.includes('&'))) {
+    return `${groups[0]} & ${groups[1]}`;
+  }
+  return groups.join(', ');
+}
+
+/** Locked presentation, and the plan choices that are no longer settings. */
+export function applyPresentationDefaults(settings) {
+  if (!settings || typeof settings !== 'object') return settings;
+  const base = defaultSettings();
+  settings.font = base.font;
+  settings.format = base.format;
+  settings.clock24 = base.clock24;
+  delete settings.dayStart;
+  delete settings.weekStart;
+  delete settings.streakMode;
+  delete settings.dailyGoal;
+  return settings;
+}
+
+export function burstCount(difficulty) {
+  if (difficulty === 'hard') return 40;
+  if (difficulty === 'medium') return 16;
+  return 8;
+}
+
+export function clone(value) {
+  return JSON.parse(JSON.stringify(value));
+}
